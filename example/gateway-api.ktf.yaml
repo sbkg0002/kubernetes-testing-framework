@@ -1,0 +1,78 @@
+# Prerequisite (once per cluster):
+#   Start cloud-provider-kind so the GatewayClass and LoadBalancer IPs are available:
+#
+#     VERSION=$(basename $(curl -Ls -o /dev/null -w '%{url_effective}' \
+#       https://github.com/kubernetes-sigs/cloud-provider-kind/releases/latest))
+#     docker run -d --name cloud-provider-kind --rm --network host \
+#       -v /var/run/docker.sock:/var/run/docker.sock \
+#       registry.k8s.io/cloud-provider-kind/cloud-controller-manager:${VERSION}
+#
+# cloud-provider-kind is a Docker daemon concern (not a Kubernetes resource),
+# so it cannot be managed inside the resources block.
+
+name: gateway-api-routing-test
+timeout: 5m
+
+resources:
+  # 1. Gateway API CRDs — fetched directly from the upstream release
+  - type: manifest
+    url: https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+
+  # 2. Namespace + Gateway (references the GatewayClass provided by cloud-provider-kind)
+  - type: manifest
+    path: ./gateway-api/infra/
+
+  # 3. Namespace + Deployment + Service + HTTPRoute
+  - type: manifest
+    path: ./gateway-api/app/
+
+wait:
+  min: 5s
+  max: 3m
+  strategy: backoff
+
+tests:
+  - name: "gateway is programmed and has an address"
+    runner: shell
+    inline: |
+      addr=$(kubectl get gateway gateway -n gateway-infra \
+        -o jsonpath='{.status.addresses[0].value}' 2>/dev/null)
+      test -n "$addr"
+      echo "gateway address: $addr"
+
+  - name: "httproute accepted by gateway"
+    runner: shell
+    inline: |
+      kubectl get httproute echo -n demo \
+        -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}' \
+        | grep -q "True"
+
+  - name: "httproute backend refs resolved"
+    runner: shell
+    inline: |
+      kubectl get httproute echo -n demo \
+        -o jsonpath='{.status.parents[0].conditions[?(@.type=="ResolvedRefs")].status}' \
+        | grep -q "True"
+
+  - name: "echo responds through gateway"
+    runner: shell
+    inline: |
+      GATEWAY_IP=$(kubectl get gateway gateway -n gateway-infra \
+        -o jsonpath='{.status.addresses[0].value}')
+      curl -sf --max-time 5 \
+        -H "Host: echo.exampledomain.example" \
+        "http://${GATEWAY_IP}/" \
+        | grep -q "Request"
+
+  - name: "path routing returns echo body"
+    runner: shell
+    inline: |
+      GATEWAY_IP=$(kubectl get gateway gateway -n gateway-infra \
+        -o jsonpath='{.status.addresses[0].value}')
+      response=$(curl -sf --max-time 5 \
+        -H "Host: echo.exampledomain.example" \
+        "http://${GATEWAY_IP}/hello")
+      echo "$response" | grep -q "Request"
+      echo "$response" | grep -q "hello"
+
+teardown: always

@@ -1,0 +1,33 @@
+name: simple-service-deploy-test
+timeout: 10m
+
+resources:
+  - type: manifest
+    path: ./simple-service/
+
+wait:
+  min: 5s
+  max: 2m
+  strategy: backoff
+
+tests:
+  - name: "health endpoint returns 200"
+    runner: http
+    url: http://whoami.default.svc/health
+    expect:
+      status: 200
+
+  - name: "whoami responds with request details"
+    runner: http
+    url: http://whoami.default.svc/
+    expect:
+      status: 200
+      body: "Hostname"
+
+  - name: "2 replicas ready"
+    runner: shell
+    inline: |
+      kubectl get deployment whoami -n default \
+        -o jsonpath='{.status.readyReplicas}' | grep -q 2
+
+teardown: always
